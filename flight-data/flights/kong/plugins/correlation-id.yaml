@@ -1,0 +1,7 @@
+plugins:
+- name: correlation-id
+  service: flights-service
+  config:
+   header_name: Kong-Request-ID
+   generator: uuid#counter
+   echo_downstream: true

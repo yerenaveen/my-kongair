@@ -1,0 +1,141 @@
+# Purpose: This workflow detects changes to the API Specs and decK config
+# Output: A PR is created with the changes to the Kong Gateway configuration.
+name: Stage Kong Config Changes
+
+on:
+  push:
+    branches:
+      - main
+      - release/**
+      - bugfix/**
+    paths-ignore:
+      - 'PRD/**'
+      - 'platform/kong/.generated/kong.yaml'
+
+jobs:
+  has-changes:
+    # Detects changes to API Specs and Kong configurations
+    name: Have specs, configurations, or pipeline files changed
+    runs-on: self-hosted
+
+    outputs:
+      are-changes: ${{ steps.changed-files.outputs.files }}
+      changed-files: ${{ steps.output-changed-files.outputs.changed_files }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - uses: dorny/paths-filter@v2
+        id: changed-files
+        with:
+          filters: |
+            files:
+              - '.github/workflows/stage-changes-for-kong.yaml'
+              - 'flight-data/flights/flights-openapi.yaml'
+              - 'flight-data/flights/kong/**'
+              - 'flight-data/routes/routes-openapi.yaml'
+              - 'flight-data/routes/kong/**'
+              - 'sales/bookings/sales-openapi.yaml'
+              - 'sales/bookings/kong/**'
+              - 'sales/customer/customers-openapi.yaml'
+              - 'sales/customer/kong/**'
+              - 'sales/bookings/bookings-openapi.yaml'
+              - 'sales/bookings/kong/**'
+              - 'experience/kong/**'
+              - 'platform/kong/**'
+
+  oas-to-kong:
+    # If changes are detected, convert the OpenAPI Specs and merge config
+    name: Convert Open to Kong configurations
+
+    needs: has-changes
+    if: ${{ needs.has-changes.outputs.are-changes == 'true' }}
+
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+        # In multiple steps, convert the OpenAPI Spec to a Kong declarative configuration
+        #   and then patch the result with the data in the kong/patches.yaml
+        #   and apply some tags
+      - name: Convert Flights API to Kong
+        run: |
+          deck file openapi2kong -s flight-data/flights/flights-openapi.yaml | \
+            deck file patch flight-data/flights/kong/patches.yaml | \
+            deck file add-tags -o .github/artifacts/kong/flight-data-flights-kong.yaml \
+              --selector "$.services[*]" --selector "$.services[*].routes[*]" flight-data
+
+      - name: Convert Routes API to Kong
+        run: |
+          deck file openapi2kong -s flight-data/routes/routes-openapi.yaml | \
+            deck file patch flight-data/routes/kong/patches.yaml | \
+            deck file add-tags -o .github/artifacts/kong/flight-data-routes-kong.yaml \
+              --selector "$.services[*]" --selector "$.services[*].routes[*]" flight-data
+
+      - name: Convert Bookings API to Kong
+        run: |
+          deck file openapi2kong -s sales/bookings/bookings-openapi.yaml | \
+            deck file patch  sales/bookings/kong/patches.yaml | \
+            deck file add-tags -o .github/artifacts/kong/sales-bookings-kong.yaml \
+              --selector "$.services[*]" --selector "$.services[*].routes[*]" sales
+
+      - name: Convert Customers API to Kong
+        run: |
+          deck file openapi2kong -s sales/customer/customers-openapi.yaml | \
+            deck file patch sales/customer/kong/patches.yaml | \
+            deck file add-tags -o .github/artifacts/kong/sales-customer-kong.yaml --selector "$.services[*]" \
+              --selector "$.services[*].routes[*]" sales
+
+      - name: Combine Kong Configurations
+        # Combine all the previous OAS->Kong configurations into one and put it in a well known place
+        run: |
+          deck file merge \
+            .github/artifacts/kong/*-kong.yaml -o .github/artifacts/kong/kong-combined.yaml
+
+      - name: Merge Experience API Configurations
+        run: |
+          deck file merge \
+            .github/artifacts/kong/kong-combined.yaml experience/kong/experience-service.yaml \
+            -o .github/artifacts/kong/kong-combined.yaml
+
+      - name: Platform Team Kong Additions
+        # The platform team has their own things to add to the final Kong configuration.
+        # The platform-kong-base.yaml is a base file for any platform defaults. It will "win" over
+        #   any settings in the domain teams Kong configurations.
+        # Then the platform adds in some objects like plugins, consumers, vaults, etc..
+        # Also the platform/kong/patches.yaml is used to patch anything from the upstream
+        #   team configurations
+        # And finally a tag is added to everything managed in this process to allow
+        #   the deck tool to isolate what is managed here from entities that may be managed
+        #   elsewhere or by other tools
+        # The platform/kong/.generated/kong.yaml is the final product and is stored in the repository.
+        #   Storing the generated file in the repo is intentional,
+        #   it should help with PR reviews, transparency, and debugging.
+        run: |
+          deck file merge \
+            .github/artifacts/kong/kong-combined.yaml \
+            platform/kong/platform-kong-base.yaml     \
+            platform/kong/consumers/*                 \
+            platform/kong/plugins/* |                  
+          deck file patch \
+            platform/kong/patches.yaml |
+          deck file add-tags \
+            -o platform/kong/.generated/kong.yaml \
+            "platform-repo-managed"
+
+      - name: Upload Artifacts
+        # Artifacts are the files that are built along the way of the pipeline but are not committed to the repo 
+        uses: actions/upload-artifact@v3
+        with:
+          name: kong-configurations
+          path: .github/artifacts/kong/*.yaml
+
+      - name: Create PR for changed Kong Gateway Configuration
+        # The only file that should be changed for this PR is platform/kong/.generated/kong.yaml
+        uses: peter-evans/create-pull-request@v6
+        with:
+          title: Stage Kong Gateway Configuration
+          branch: create-pull-request/patch

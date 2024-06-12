@@ -1,0 +1,50 @@
+name: Deploy Kong changes to Prod
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - PRD/kong/kong.yaml
+      - .github/workflows/deploy-kong-to-prod.yaml
+
+jobs:
+  deploy-kong:
+    name: Deploy Kong
+    runs-on: self-hosted  # or ubuntu-latest if you are using GitHub-hosted runners
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Check and Set DEPLOY_TARGET
+        id: check-deploy-target
+        run: |
+          if [ -z "${{ env.DEPLOY_TARGET }}" ]; then
+            echo "DEPLOY_TARGET=local" >> $GITHUB_ENV
+          else
+            echo "DEPLOY_TARGET=${{ env.DEPLOY_TARGET }}" >> $GITHUB_ENV
+          fi
+
+      - name: deck gateway sync to Konnect
+        if: env.DEPLOY_TARGET == 'konnect'
+        run: |
+          deck gateway sync --select-tag platform-repo-managed \
+              PRD/kong/kong.yaml \
+              ----konnect-control-plane-name test-cp \
+              --konnect-token ${{ secrets.KONNECT_PAT }}
+
+      - name: deck gateway sync locally
+        if: env.DEPLOY_TARGET == 'local'
+        run: |
+          deck gateway sync --select-tag platform-repo-managed \
+              PRD/kong/kong.yaml \
+              --workspace default \
+              --kong-addr http://localhost:8001
+
+      - name: Publish Spec to Dev Portal
+        run: |
+          cd flight-data/flights && \
+          http --check-status --ignore-stdin PUT :8001/default/files/specs/flights-openapi.yaml contents=@flights-openapi.yaml
+
+

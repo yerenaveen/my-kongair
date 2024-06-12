@@ -1,0 +1,79 @@
+name: Flights CD - Deploy to Kong and Upload Spec
+
+on:
+  push:
+    branches:
+      - development/**
+
+jobs:
+  deploy_to_kong:
+    runs-on: self-hosted
+    name: Apply generated configuration to local Kong gateway and update API documentation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Check Kong Gateway is up
+        run: deck gateway ping --kong-addr http://localhost:8001
+
+      - name: Generate Kong declarative configuration from Spec
+        run: |
+          deck file openapi2kong --spec flight-data/flights/flights-openapi.yaml \
+          --output-file flight-data/flights/kong/.generated/kong.yaml
+
+      - name: Add plugin configuration
+        run: |
+          deck file merge flight-data/flights/kong/.generated/kong.yaml \
+          flight-data/flights/kong/plugins/*.yaml \
+          --output-file flight-data/flights/kong/.generated/kong.yaml
+
+      - name: Add tags to Kong configuration
+        run: |
+          cat flight-data/flights/kong/.generated/kong.yaml | \
+          deck file add-tags  --selector "$.services[*]" \
+          --selector "$.services[*].routes[*]" flights-team \
+          --output-file flight-data/flights/kong/.generated/kong.yaml
+
+
+      - name: Patch service for test environment
+        run: |
+          cat flight-data/flights/kong/.generated/kong.yaml | \
+          deck file patch flight-data/flights/kong/patches.yaml \
+          --output-file flight-data/flights/kong/.generated/kong.yaml
+
+      - name: Validate Kong declarative configuration
+        run: deck gateway validate flight-data/flights/kong/.generated/kong.yaml
+
+      - name: Backup current Kong Configuration
+        run: deck gateway dump -o flight-data/flights/kong/.generated/backup.yaml
+
+      - name: Check changes against current Kong configuration
+        run: deck gateway diff flight-data/flights/kong/.generated/kong.yaml
+
+      - name: Deploy declarative config
+        run: deck gateway sync flight-data/flights/kong/.generated/kong.yaml
+
+      - name: Run Integration Tests
+        run: |
+          for test_script in flight-data/flights/tests/*.sh; do
+            echo "Running $test_script"
+            bash "$test_script"
+            if [ $? -ne 0 ]; then
+              echo "Test $test_script failed"
+              exit 1
+            fi
+          done
+      - name: Publish Spec to Dev Portal
+        run: |
+          cd flight-data/flights && \
+          http --check-status --ignore-stdin PUT :8001/default/files/specs/flights-openapi.yaml \
+          contents=@flights-openapi.yaml
+  
+  
+
+        
+
+
+
+
+

@@ -1,0 +1,47 @@
+name: Kong CI - Validate Spec and Kong Config
+
+on:
+  pull_request:
+    branches:
+      - development/**
+      
+jobs:
+  validate_oas_and_kong_config:
+    runs-on: self-hosted
+    name: Generate Kong config from Spec and Validate config
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        #First we check whether the Kong Gateway is up
+      - name: Check Kong Gateway is up
+        run: deck gateway ping --kong-addr http://localhost:8001
+
+      - name: Lint OpenAPI Specification
+        run: inso lint spec flight-data/flights/flights-openapi.yaml --ci
+
+      - name: Generate Kong declarative configuration from Spec
+        run: |
+          deck file openapi2kong --spec flight-data/flights/flights-openapi.yaml \
+          --output-file flight-data/flights/kong/.generated/kong.yaml
+
+      - name: Add plugin configuration
+        run: |
+          deck file merge flight-data/flights/kong/.generated/kong.yaml \
+          flight-data/flights/kong/plugins/*.yaml \
+          --output-file flight-data/flights/kong/.generated/kong.yaml
+
+      - name: Add tags to Kong configuration
+        run: |
+          cat flight-data/flights/kong/.generated/kong.yaml | \
+          deck file add-tags  --selector "$.services[*]" \
+          --selector "$.services[*].routes[*]" flights-team \
+          --output-file flight-data/flights/kong/.generated/kong.yaml
+
+      - name: Patch service for test environment
+        run: |
+          cat flight-data/flights/kong/.generated/kong.yaml | \
+          deck file patch flight-data/flights/kong/patches.yaml \
+          --output-file flight-data/flights/kong/.generated/kong.yaml  
+                  
+      - name: Validate Kong declarative configuration
+        run: deck gateway validate flight-data/flights/kong/.generated/kong.yaml

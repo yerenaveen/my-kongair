@@ -1,0 +1,8 @@
+---
+- ticket_number: JAF1011
+  seat: 3A
+  flight:
+    number: BA830
+    route_id: LHR-DUB
+    scheduled_departure: '2024-05-14T19:00:00Z'
+    scheduled_arrival: '2024-05-14T20:00:00Z'
